@@ -1,0 +1,245 @@
+--- a/droplog.c
++++ b/droplog.c
+@@ -0,0 +1,86 @@
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <syslog.h>
++
++#include "sqlite3.h"
++#include "droplog.h"
++
++static sqlite3 *db = NULL;
++int _SetRowId(void* pNames, int argc, char** argv, char** col_names);
++
++int InitDropDB(const char *db_path)
++{
++	int rc;
++	char *err;
++    if (db){
++        syslog(LOG_ERR, "MINIUPNPD: dropped packets database already initialized");
++        return -1;
++    }
++	//opens DB
++	if ((rc = sqlite3_open(db_path, &db)) != SQLITE_OK)
++		return -1;
++	//creates table for dropped packets if it's not present
++	char *sql = "CREATE TABLE IF NOT EXISTS packets(timestamp TEXT, id INT, \
++                        eport INT, iaddr INT, iport INT, proto TEXT);";
++	if ((rc = sqlite3_exec(db, sql, 0, 0, &err)) != SQLITE_OK){
++        syslog(LOG_ERR, "MINIUPNPD: dropped packets' database initialization failed: %s", err);
++		sqlite3_free(err);
++		return -1;
++	}
++	return 0;
++}
++
++int LogDropDb(unsigned short eport, const char * iaddr, 
++            unsigned short iport, const char * protocol)
++{
++	char buff[128];
++	int rc;
++	char *err;
++	int id = 0;
++	if (GetNewIdDropDb(&id) != 0)
++		return -1;
++	if ((rc = sprintf(buff, "INSERT INTO packets VALUES(datetime('now'), \
++			'%u', '%hu', '%s', '%hu', '%s');", \
++                        id , eport, iaddr, iport, protocol)) < 0){
++		return -1;
++						}
++
++	if ((rc = sqlite3_exec(db, buff, 0, 0, &err)) != SQLITE_OK){
++        syslog(LOG_ERR, "MINIUPNPD: dropped packets' database insert failed: %s", err);
++		sqlite3_free(err);
++		return -1;
++	}
++	return 0;
++}
++
++int _SetRowId(void* id, int argc, char** argv, char** col_names)
++{
++	if (argc == 1 && !argv[0]){
++		*(int*)id = 0;
++		return 0;
++	}
++	char str[10];
++    long value;
++    strcpy(str, argv[0]);
++    value = strtol(str, &argv[0], 10);
++	*(int*)id = (int)value + 1;
++	return 0;
++}
++
++int GetNewIdDropDb(int *id)
++{
++	char *err;
++	if (sqlite3_exec(db, "SELECT MAX(id) FROM packets;", _SetRowId, id, &err) != SQLITE_OK){
++        syslog(LOG_ERR, "MINIUPNPD: dropped packets' database id search failed: %s", err);
++		sqlite3_free(err);
++		return -1;
++	}
++	return 0;
++}
++
++void CloseDropDB()
++{
++    sqlite3_close(db);
++}
+--- a/droplog.h
++++ b/droplog.h
+@@ -0,0 +1,19 @@
++#ifndef UPNPDROPLOG_H_INCLUDED
++#define UPNPDROPLOG_H_INCLUDED
++
++#include "sqlite3.h"
++
++//Initializes database for dropped packets at path = <db_name>
++int InitDropDB(const char *db_name);
++
++//Loggs dropped packet
++int LogDropDb(unsigned short eport, const char * iaddr, 
++            unsigned short iport, const char * protocol);
++
++//Gets new logged packet id
++int GetNewIdDropDb();
++
++//Closes dropped packets database
++void CloseDropDB();
++
++#endif
+--- a/Makefile.linux
++++ b/Makefile.linux
+@@ -48,7 +48,7 @@
+            upnpredirect.o getifaddr.o daemonize.o upnpglobalvars.o \
+            options.o upnppermissions.o minissdp.o natpmp.o pcpserver.o \
+            upnpevents.o upnputils.o getconnstatus.o \
+-           upnppinhole.o pcplearndscp.o asyncsendto.o
++           upnppinhole.o pcplearndscp.o asyncsendto.o droplog.o
+ 
+ LNXOBJS = linux/getifstats.o linux/ifacewatcher.o linux/getroute.o
+ NETFILTEROBJS = netfilter/iptcrdr.o netfilter/iptpinhole.o netfilter/nfct_get.o
+@@ -168,6 +168,8 @@
+ endif # ($(TEST),1)
+ endif # ($(TARGET_OPENWRT,)
+ 
++LDLIBS +=-lsqlite3
++
+ TESTUPNPDESCGENOBJS = testupnpdescgen.o upnpdescgen.o
+ 
+ EXECUTABLES = miniupnpd testupnpdescgen testgetifstats \
+@@ -276,7 +278,7 @@
+ miniupnpd.o: miniupnpdtypes.h upnphttp.h upnpdescgen.h miniupnpdpath.h
+ miniupnpd.o: getifaddr.h upnpsoap.h options.h minissdp.h upnpredirect.h
+ miniupnpd.o: upnppinhole.h daemonize.h upnpevents.h asyncsendto.h natpmp.h
+-miniupnpd.o: pcpserver.h commonrdr.h upnputils.h ifacewatcher.h
++miniupnpd.o: pcpserver.h commonrdr.h upnputils.h ifacewatcher.h droplog.h
+ upnphttp.o: config.h upnphttp.h upnpdescgen.h miniupnpdpath.h upnpsoap.h
+ upnphttp.o: upnpevents.h upnputils.h upnpglobalvars.h upnppermissions.h
+ upnphttp.o: miniupnpdtypes.h
+@@ -286,7 +288,7 @@
+ upnpsoap.o: macros.h config.h upnpglobalvars.h upnppermissions.h
+ upnpsoap.o: miniupnpdtypes.h upnphttp.h upnpsoap.h upnpreplyparse.h
+ upnpsoap.o: upnpredirect.h upnppinhole.h getifaddr.h getifstats.h
+-upnpsoap.o: getconnstatus.h upnpurns.h
++upnpsoap.o: getconnstatus.h upnpurns.h droplog.h
+ upnpreplyparse.o: upnpreplyparse.h minixml.h
+ minixml.o: minixml.h
+ portinuse.o: macros.h config.h upnpglobalvars.h upnppermissions.h
+@@ -338,6 +340,7 @@
+ upnpdescgen.o: config.h getifaddr.h upnpredirect.h upnpdescgen.h
+ upnpdescgen.o: miniupnpdpath.h upnpglobalvars.h upnppermissions.h
+ upnpdescgen.o: miniupnpdtypes.h upnpdescstrings.h upnpurns.h getconnstatus.h
++droplog.o: droplog.h
+ testgetifstats.o: getifstats.h
+ testupnppermissions.o: upnppermissions.h config.h
+ testgetifaddr.o: config.h getifaddr.h
+--- a/miniupnpd.c
++++ b/miniupnpd.c
+@@ -68,6 +68,7 @@
+ #include "daemonize.h"
+ #include "upnpevents.h"
+ #include "asyncsendto.h"
++#include "droplog.h"
+ #ifdef ENABLE_NATPMP
+ #include "natpmp.h"
+ #ifdef ENABLE_PCP
+@@ -91,6 +92,11 @@
+ #define DEFAULT_CONFIG "/etc/miniupnpd.conf"
+ #endif
+ 
++#ifdef LOG_DROPPED
++	#include <libnetfilter_log/libnetfilter_log.h>
++	#include <libnetfilter_log/linux_nfnetlink_log.h>
++#endif
++
+ #ifdef USE_MINIUPNPDCTL
+ struct ctlelem {
+ 	int socket;
+@@ -1062,7 +1068,8 @@
+  * 8) set signal handlers
+  * 9) init random generator (srandom())
+  * 10) init redirection engine
+- * 11) reload mapping from leasefile */
++ * 11) reload mapping from leasefile
++ * 12) start dropped packets db */
+ static int
+ init(int argc, char * * argv, struct runtime_vars * v)
+ {
+@@ -1726,6 +1733,9 @@
+ 	reload_from_lease_file();
+ #endif
+ 
++	if(InitDropDB("/usr/share/miniupnpd/dropped_packets.db") != 0)
++		return 1;
++
+ #ifdef TOMATO
+ 	tomato_load();
+ #endif /* TOMATO */
+@@ -2743,6 +2753,7 @@
+ 	free(snatpmp);
+ #endif
+ 	free(snotify);
++	CloseDropDB();
+ 	closelog();
+ #ifndef DISABLE_CONFIG_FILE
+ 	freeoptions();
+--- a/upnpsoap.c
++++ b/upnpsoap.c
+@@ -33,6 +33,7 @@
+ #include "getconnstatus.h"
+ #include "upnpurns.h"
+ #include "upnputils.h"
++#include "droplog.h"
+ 
+ /* utility function */
+ static int is_numeric(const char * s)
+@@ -505,9 +506,7 @@
+ 	syslog(LOG_INFO, "%s: ext port %hu to %s:%hu protocol %s for: %s leaseduration=%u rhost=%s",
+ 	       action, eport, int_ip, iport, protocol, desc, leaseduration,
+ 	       r_host ? r_host : "NULL");
+-
+ 	r = upnp_redirect(r_host, eport, int_ip, iport, protocol, desc, leaseduration);
+-
+ 	ClearNameValueList(&data);
+ 
+ 	/* possible error codes for AddPortMapping :
+@@ -530,6 +529,8 @@
+              There are not enough free ports available to complete the mapping
+              (added in IGD v2)
+ 	 * 729 - ConflictWithOtherMechanisms (added in IGD v2) */
++	if (r != 0)
++		LogDropDb(eport, int_ip, iport, protocol);
+ 	switch(r)
+ 	{
+ 	case 0:	/* success */
+@@ -543,6 +544,8 @@
+ 		break;
+ #endif /* IGD_V2 */
+ 	case -2:	/* already redirected */
++		SoapError(h, 718, "ConflictInMappingEntry");
++		break;
+ 	case -3:	/* not permitted */
+ 		SoapError(h, 718, "ConflictInMappingEntry");
+ 		break;

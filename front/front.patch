@@ -1,0 +1,77 @@
+--- ./luci-app-upnp-tlt/luasrc/model/cbi/upnp/upnp.lua
++++ ./luci-app-upnp-tlt/luasrc/model/cbi/upnp/upnp.lua
+@@ -112,4 +112,64 @@
+ ac:value("allow","Allow")
+ ac:value("deny", "Deny")
+ 
++
++local sqlite = require "luci.model.sqlite".init()
++local db_path = "/usr/share/miniupnpd/dropped_packets.db"
++local data = {}
++local db = sqlite.database(db_path)
++
++if db then
++	data = db:select("select * from packets order by timestamp desc;")
++	db:close()
++end
++
++local s = m:section(Table, data, translate("Requests"))
++s.anonymous = true
++s.template = "cbi/tblsection_dynamic"
++s.addremove = false
++s.refresh = true
++s.table_config = {
++	truncatePager = false,
++	labels = {
++		perPage = "Records per page {select}",
++		noRows = "No entries found",
++		info = ""
++	},
++	layout = {
++		top = "<table><tr style='padding: 0 !important; border:none !important'><td style='display: flex !important; flex-direction: row'>{select}<span style='margin-left: auto; width:100px'></span></td></tr></table>",
++		bottom = "{info}{pager}"
++	}
++}
++
++s:option(DummyValue, "timestamp", translate("Timestamp"))
++s:option(DummyValue, "id", translate("packet ID"))
++s:option(DummyValue, "eport", translate("External port"))
++s:option(DummyValue, "iaddr", translate("Internal address"))
++s:option(DummyValue, "iport", translate("Internal port"))
++s:option(DummyValue, "proto", translate("Protocol"))
++
++abtn = s:option(Button, "allow_btn", translate("Allow Packet"))
++abtn.inputtitle = "Allow"
++function abtn.write(self, section, value)
++	local eport = self.map:get(section, "eport")
++	local iaddr = self.map:get(section, "iaddr")
++	local iport = self.map:get(section, "iport")
++	local proto = self.map:get(section, "proto")
++	local pacid = self.map:get(section, "id")
++
++	if pacid == "" or pacid == nil or
++		eport == "" or eport == nil or
++		iaddr == "" or iaddr == nil or
++		iport == "" or iport == nil then
++		self.map:error_msg("Missing values")
++	else
++		r = s2:create()
++		m.uci:set("upnpd", r, "action", "allow")
++		m.uci:set("upnpd", r, "ext_ports", eport)
++		m.uci:set("upnpd", r, "int_addr", iaddr)
++		m.uci:set("upnpd", r, "int_ports", iport)
++		m.uci:set("upnpd", r, "comment", "Allow packet " .. pacid)
++	end
++end
++dbtn = s:option(Button, "del_btn", translate("Delete Packet"))
++dbtn.inputtitle = "Delete"
++function dbtn.write(self, section, value)
++	local pacid = self.map:get(section, "id")
++	db = sqlite.database(db_path)
++     	if db then
++ 		db:select("delete from packets where id="..pacid..";")
++		db:close()
++	end
++end
++
+ return m
